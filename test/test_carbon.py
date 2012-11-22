@@ -8,6 +8,7 @@ import os.path
 import shutil
 import random
 import whisper
+import tempfile
 from socket import socket
 from ConfigParser import ConfigParser
 
@@ -20,15 +21,19 @@ if len(sys.argv) > 1:
 
 class CarbonTestCase(unittest.TestCase):
     current_dir = os.path.abspath(os.path.dirname(__file__))
+    temp_dir = tempfile.mkdtemp()
+    test_conf = os.path.join(current_dir, 'conf', 'carbon.conf')
+    
+    print ("currentdir=" + current_dir)
+    print ("tempdir=" + temp_dir)
     step = 0
-    max_datatests = 0
-    DEFAULT_NUM_DATATESTS = 20
+    max_datapoints = 0
+    MAX_SAMPLE = 20
 
     @classmethod
-    def setUpClass(cls):
-        os.putenv("GRAPHITE_ROOT", cls.current_dir)
-        testconf = os.path.join(cls.current_dir, 'conf', 'carbon.conf')
-        subprocess.call(["carbon-cache.py", "--config=" + testconf, "start"])
+    def setUpClass(cls):        
+        os.putenv("GRAPHITE_ROOT", cls.temp_dir)
+        subprocess.call(["carbon-cache.py", "--config=" + cls.test_conf, "start"])
         
         storage_conf = os.path.join(cls.current_dir, 'conf', 'storage-schemas.conf')
         
@@ -47,13 +52,11 @@ class CarbonTestCase(unittest.TestCase):
         retentions = whisper.parseRetentionDef(options['retentions'])
         
         cls.step = retentions[0]
-        cls.max_datatests = retentions[1]
+        cls.max_datapoints = retentions[1]
         
-        
-        time.sleep(2)
+        time.sleep(2) # NB - allows file operations to complete
 
     def runTest(self):
-        
         tags = ['abc', 'def']
         
         sock = socket()
@@ -64,12 +67,13 @@ class CarbonTestCase(unittest.TestCase):
 
         # Create some sample data
         
-        num_data_points = min(self.DEFAULT_NUM_DATATESTS, self.max_datatests)
+        num_data_points = min(self.MAX_SAMPLE, self.max_datapoints)
         
         print "num_data_points=" + str(num_data_points)
         
         now = int(time.time())
         now -= now % self.step
+        print 'now, ', now
         data = []
         lines = []
         for i in range(1, num_data_points+1):
@@ -87,18 +91,20 @@ class CarbonTestCase(unittest.TestCase):
         
         # send!
         sock.sendall(message)
-        time.sleep(3)
+        time.sleep(3) # NB - allows file operations to complete
         
         print('data starts at: ' + str(data[0][0]))
         print('current time is:' + str(time.time()))
         print len(data)
         # check if data files were created
+
         for i,tag in enumerate(tags):
-            tagFile = os.path.join(self.current_dir, "storage","whisper","folder", tag + ".wsp")
+            tagFile = os.path.join(self.temp_dir, "storage","whisper","folder", tag + ".wsp")
             self.assertTrue(os.path.exists(tagFile))
         
             # check if data files contain correct data
             print(whisper.info(tagFile))
+            print 'from, until:', (now - self.step*(num_data_points), now)
             print(whisper.fetch(tagFile, now - self.step*(num_data_points), now))
             # The values passed to whisper.fetch for 'from' and 'to' are 
             # rounded up to the next discrete time point. As a result, we subtract one step from them
@@ -108,13 +114,16 @@ class CarbonTestCase(unittest.TestCase):
                                             now - self.step*(num_data_points), now)
             print len(stored_data)
             
-            for i,d in enumerate(stored_data):
-                self.assertAlmostEquals(d, data[i][1])
+            # Check that all fetched data corresponds to the data that was sent
+            # (Note: some of the sent data may have rolled off the retained data
+            # so only the fetched data that is still retained is compared)
+            for whisper_data, sent_data in zip(reversed(stored_data), reversed(data)):
+                self.assertAlmostEquals(whisper_data, sent_data[1])
         
     @classmethod
     def tearDownClass(cls):
-        subprocess.call(["carbon-cache.py", "stop"])
-        shutil.rmtree(os.path.join(cls.current_dir, "storage", "whisper"))
+        subprocess.call(["carbon-cache.py", "--config=" + cls.test_conf, "stop"])
+        shutil.rmtree(cls.temp_dir)
         
 if __name__ == '__main__':
     unittest.main() 
