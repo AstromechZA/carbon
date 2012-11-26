@@ -26,10 +26,6 @@ except Exception as e:
 CARBON_SERVER = '127.0.0.1'
 CARBON_PORT = 2003
 
-delay = 60
-if len(sys.argv) > 1:
-    delay = int( sys.argv[1] )
-
 class CarbonTestCase(unittest.TestCase):
 
     # Paths
@@ -53,8 +49,7 @@ class CarbonTestCase(unittest.TestCase):
 
         carboncachepath = os.path.join(cls.carbon_dir, 'bin', 'carbon-cache.py')
 
-        p = subprocess.Popen(["python", carboncachepath, "--config=" + cls.test_conf, "start"])
-        print('Sub process: %d' % p.pid)
+        subprocess.Popen(["python", carboncachepath, "--config=" + cls.test_conf, "start"])
 
         # Extract test retentions from 'storage-schemas.conf'
         # Here we have assumed that 'storage-schemas.conf' only has one section;
@@ -73,7 +68,7 @@ class CarbonTestCase(unittest.TestCase):
         cls.step = retentions[0]
         cls.max_datapoints = retentions[1]
 
-        time.sleep(2) # NB - allows file operations to complete
+        time.sleep(2)                                                   # NB - allows file operations to complete
 
     def runTest(self):
         tags = ['abc', 'def']
@@ -85,14 +80,9 @@ class CarbonTestCase(unittest.TestCase):
             self.fail("could not connect")
 
         # Create some sample data
-
         num_data_points = min(self.MAX_SAMPLE, self.max_datapoints)
-
-        print "num_data_points=" + str(num_data_points)
-
         now = int(time.time())
         now -= now % self.step
-        print 'now, ', now
         data = []
         lines = []
         for i in range(1, num_data_points+1):
@@ -103,10 +93,9 @@ class CarbonTestCase(unittest.TestCase):
         message = '\n'.join(lines) + '\n' #all lines must end in a newline
 
         # debug
-        print "sending message\n"
-        print '-' * 80
+        print "sending message"
+        print '-' * 70
         print message
-        print
 
         # send!
         sock.sendall(message)
@@ -119,19 +108,18 @@ class CarbonTestCase(unittest.TestCase):
 
         for i,tag in enumerate(tags):
             tagFile = os.path.join(self.temp_dir, "storage","whisper","folder", tag + ".wsp")
-            print(tagFile)
             self.assertTrue(os.path.exists(tagFile))
 
             # check if data files contain correct data
-            print(whisper.info(tagFile))
+            # print(whisper.info(tagFile))
             print 'from, until:', (now - self.step*(num_data_points), now)
-            print(whisper.fetch(tagFile, now - self.step*(num_data_points), now))
+            # print(whisper.fetch(tagFile, now - self.step*(num_data_points), now))
             # The values passed to whisper.fetch for 'from' and 'to' are
             # rounded up to the next discrete time point. As a result, we subtract one step from them
             # Additionally, the upper limit is non-inclusive in the fetch
             # and so we need to increment our 'to' value by a step-size
             data_period_info, stored_data = whisper.fetch(tagFile, now - self.step*(num_data_points), now)
-            print len(stored_data)
+            # print len(stored_data)
 
             # Check that all fetched data corresponds to the data that was sent
             # (Note: some of the sent data may have rolled off the retained data
