@@ -24,7 +24,9 @@ except Exception as e:
     exit(1)
 
 CARBON_SERVER = '127.0.0.1'
-CARBON_PORT = 2003
+CARBON_PORT = 2023
+
+
 
 class CarbonTestCase(unittest.TestCase):
 
@@ -36,6 +38,9 @@ class CarbonTestCase(unittest.TestCase):
     test_conf = os.path.join(test_dir, 'conf', 'carbon.conf')                # path to test config
     test_stor = os.path.join(test_dir, 'conf', 'storage-schemas.conf')       # path to test config
 
+    carboncachepath = os.path.join(carbon_dir, 'bin', 'carbon-cache.py')
+    carbonaggrpath = os.path.join(carbon_dir, 'bin', 'carbon-aggregator.py')
+
     print('temp dir: %s' % temp_dir)
     print('test dir: %s' % test_dir)
 
@@ -43,15 +48,15 @@ class CarbonTestCase(unittest.TestCase):
     max_datapoints = 0
     MAX_SAMPLE = 20
 
-    carbonp = None
+    carboncachep = None
+    carbonaggrp = None
 
     @classmethod
     def setUpClass(cls):
         os.putenv("GRAPHITE_ROOT", cls.temp_dir)                                # this is where temporary files and storage will end up
 
-        carboncachepath = os.path.join(cls.carbon_dir, 'bin', 'carbon-cache.py')
-
-        cls.carbonp = subprocess.Popen(["python", carboncachepath, "--config=" + cls.test_conf, "start"])
+        cls.carboncachep = subprocess.Popen(["python", cls.carboncachepath, "--config=" + cls.test_conf, "start"])
+        cls.carbonaggrp = subprocess.Popen(["python", cls.carbonaggrpath, "--config=" + cls.test_conf, "start"])
 
         # Extract test retentions from 'storage-schemas.conf'
         # Here we have assumed that 'storage-schemas.conf' only has one section;
@@ -70,10 +75,12 @@ class CarbonTestCase(unittest.TestCase):
         cls.step = retentions[0]
         cls.max_datapoints = retentions[1]
 
+        print('step size: %d' % cls.step)
+
         time.sleep(2)                                                   # NB - allows file operations to complete
 
     def runTest(self):
-        tags = ['abc', 'def']
+        tag = 'random_data_cca'
 
         sock = socket()
         try:
@@ -82,72 +89,89 @@ class CarbonTestCase(unittest.TestCase):
             self.fail("could not connect")
 
         # Create some sample data
-        num_data_points = min(self.MAX_SAMPLE, self.max_datapoints)
-        now = int(time.time())
-        now -= now % self.step
+        num_data_points = 5
+        num_substep = 10
+
         data = []
         lines = []
-        for i in range(1, num_data_points+1):
-            data.append((now - self.step*(num_data_points - i), random.random()*100))
-            for tag in tags:
-                lines.append("folder.%s %s %d" % (tag, data[-1][1], data[-1][0]))
 
-        message = '\n'.join(lines) + '\n' #all lines must end in a newline
+        start = (time.time())
+        start = start - (start % self.step)
+        last = start
 
-        # debug
-        print "sending message"
-        print '-' * 70
-        print message
 
-        # send!
-        sock.sendall(message)
+        stime = float(float(self.step)/float(num_substep))
+
+        pts = (num_data_points)*(num_substep)
+        tp = 0.0
+
+        print('Bin is ' + str(self.step) + ' seconds.')
+        print('Adding ' + str(1.0/stime) + ' points a second for ' + str(num_data_points*self.step) + ' seconds.')
+
+        print('0.0%')
+        for i in range(num_data_points):
+
+            to_aggregate = []
+
+            for tick in range(num_substep):
+
+                to_aggregate.append(  (last, random.random()*100)  )
+
+                line = "folder.%s %s %d \n" % (tag, to_aggregate[-1][1], to_aggregate[-1][0])
+                sock.sendall(line)
+
+                tp+=1.0
+
+                print(str((tp/pts)*100) + '%')
+
+                last += stime
+                time.sleep(stime)
+
+
+            aggregated_data = aggregate(to_aggregate)
+            data.append(  aggregated_data  )
+
+        print('')
+
         time.sleep(2) # NB - allows file operations to complete
 
-        print('data starts at: ' + str(data[0][0]))
-        print('current time is:' + str(time.time()))
-        print len(data)
-        # check if data files were created
+        tagFile = os.path.join(self.temp_dir, "storage","whisper","folder", tag + ".wsp")
 
-        for i,tag in enumerate(tags):
-            tagFile = os.path.join(self.temp_dir, "storage","whisper","folder", tag + ".wsp")
-            self.assertTrue(os.path.exists(tagFile))
+        self.assertTrue(os.path.exists(tagFile))
 
-            # check if data files contain correct data
-            # print(whisper.info(tagFile))
-            print 'from, until:', (now - self.step*(num_data_points), now)
-            # print(whisper.fetch(tagFile, now - self.step*(num_data_points), now))
-            # The values passed to whisper.fetch for 'from' and 'to' are
-            # rounded up to the next discrete time point. As a result, we subtract one step from them
-            # Additionally, the upper limit is non-inclusive in the fetch
-            # and so we need to increment our 'to' value by a step-size
-            data_period_info, stored_data = whisper.fetch(tagFile, now - self.step*(num_data_points), now)
-            # print len(stored_data)
+        data_period_info, stored_data = whisper.fetch(tagFile, start-1, last)
+        print len(stored_data)
 
-            # Check that all fetched data corresponds to the data that was sent
-            # (Note: some of the sent data may have rolled off the retained data
-            # so only the fetched data that is still retained is compared)
-            for whisper_data, sent_data in zip(reversed(stored_data), reversed(data)):
-                self.assertAlmostEquals(whisper_data, sent_data[1])
+        for whisper_data, sent_data in zip(stored_data, data):
+            self.assertAlmostEquals(whisper_data, sent_data)
 
     @classmethod
     def tearDownClass(cls):
-
 
         if os.name == 'nt':
             pidpath = os.path.join(cls.temp_dir, "storage")
             if not os.path.exists(pidpath):
                 os.makedirs(pidpath)
-            pidfilepath = os.path.join(pidpath, 'carbon-cache-a.pid')
-            print('Creating "'+pidfilepath+'" for ' + str(cls.carbonp.pid))
-            pidf = open(pidfilepath, 'w')
-            pidf.write(str(cls.carbonp.pid))
+            ccpidfilepath = os.path.join(pidpath, 'carbon-cache-a.pid')
+            capidfilepath = os.path.join(pidpath, 'carbon-aggregator-a.pid')
+
+            print('Creating "'+ccpidfilepath+'" for ' + str(cls.carboncachep.pid))
+            pidf = open(ccpidfilepath, 'w')
+            pidf.write(str(cls.carboncachep.pid))
             pidf.close()
 
-        carboncachepath = os.path.join(cls.carbon_dir, 'bin', 'carbon-cache.py')
-        p = subprocess.Popen(["python", carboncachepath, "--config=" + cls.test_conf, "stop"])
+            print('Creating "'+capidfilepath+'" for ' + str(cls.carbonaggrp.pid))
+            pidf = open(capidfilepath, 'w')
+            pidf.write(str(cls.carbonaggrp.pid))
+            pidf.close()
+
+        subprocess.Popen(["python", cls.carbonaggrpath, "--config=" + cls.test_conf, "stop"])
+        p = subprocess.Popen(["python", cls.carboncachepath, "--config=" + cls.test_conf, "stop"])
         while p.poll() == None:
             time.sleep(0.1)
-        shutil.rmtree(cls.temp_dir)
+
+def aggregate(data):
+    return sum([d[1] for d in data])/len(data)
 
 if __name__ == '__main__':
     unittest.main()
