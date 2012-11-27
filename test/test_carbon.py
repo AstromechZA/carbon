@@ -43,13 +43,15 @@ class CarbonTestCase(unittest.TestCase):
     max_datapoints = 0
     MAX_SAMPLE = 20
 
+    carbonp = None
+
     @classmethod
     def setUpClass(cls):
         os.putenv("GRAPHITE_ROOT", cls.temp_dir)                                # this is where temporary files and storage will end up
 
         carboncachepath = os.path.join(cls.carbon_dir, 'bin', 'carbon-cache.py')
 
-        subprocess.Popen(["python", carboncachepath, "--config=" + cls.test_conf, "start"])
+        cls.carbonp = subprocess.Popen(["python", carboncachepath, "--config=" + cls.test_conf, "start"])
 
         # Extract test retentions from 'storage-schemas.conf'
         # Here we have assumed that 'storage-schemas.conf' only has one section;
@@ -129,6 +131,18 @@ class CarbonTestCase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+
+
+        if os.name == 'nt':
+            pidpath = os.path.join(cls.temp_dir, "storage")
+            if not os.path.exists(pidpath):
+                os.makedirs(pidpath)
+            pidfilepath = os.path.join(pidpath, 'carbon-cache-a.pid')
+            print('Creating "'+pidfilepath+'" for ' + str(cls.carbonp.pid))
+            pidf = open(pidfilepath, 'w')
+            pidf.write(str(cls.carbonp.pid))
+            pidf.close()
+
         carboncachepath = os.path.join(cls.carbon_dir, 'bin', 'carbon-cache.py')
         p = subprocess.Popen(["python", carboncachepath, "--config=" + cls.test_conf, "stop"])
         while p.poll() == None:
