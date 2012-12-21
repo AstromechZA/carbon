@@ -203,5 +203,6 @@ class WriterService(Service):
     def stopService(self):
         self.storage_reload_task.stop()
         self.aggregation_reload_task.stop()
-        self.writer.stop()
+        if hasattr(self, 'writer') and self.writer is not None:
+            self.writer.stop()
         Service.stopService(self)

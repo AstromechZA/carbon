@@ -54,7 +54,11 @@ class MetricReceiver:
       instrumentation.increment('whitelistRejects')
       return
     if datapoint[1] == datapoint[1]:  # filter out NaN values
-      events.metricReceived(metric, datapoint)
+
+      if isinstance(self, AggregatorMetricLineReceiver):
+          events.aggreMetricReceived(metric, datapoint)
+      else:
+          events.cacheMetricReceived(metric, datapoint)
 
 
 class MetricLineReceiver(MetricReceiver, LineOnlyReceiver):
@@ -69,6 +73,12 @@ class MetricLineReceiver(MetricReceiver, LineOnlyReceiver):
       return
 
     self.metricReceived(metric, datapoint)
+
+class CacheMetricLineReceiver(MetricLineReceiver):
+    pass
+
+class AggregatorMetricLineReceiver(MetricLineReceiver):
+    pass
 
 
 class MetricDatagramReceiver(MetricReceiver, DatagramProtocol):
@@ -103,8 +113,17 @@ class MetricPickleReceiver(MetricReceiver, Int32StringReceiver):
       except:
         continue
 
-      self.metricReceived(metric, datapoint)
+      if isinstance(self, AggregatorMetricPickleReceiver):
+          events.aggreMetricReceived(metric, datapoint)
+      else:
+          events.cacheMetricReceived(metric, datapoint)
 
+
+class CacheMetricPickleReceiver(MetricPickleReceiver):
+    pass
+
+class AggregatorMetricPickleReceiver(MetricPickleReceiver):
+    pass
 
 class CacheManagementHandler(Int32StringReceiver):
   def connectionMade(self):

@@ -37,8 +37,11 @@ class CarbonRootService(MultiService):
 
 def createBaseService(config):
     from carbon.conf import settings
-    from carbon.protocols import (MetricLineReceiver, MetricPickleReceiver,
-                                  MetricDatagramReceiver)
+    from carbon.protocols import CacheMetricLineReceiver, \
+        CacheMetricPickleReceiver, \
+        AggregatorMetricLineReceiver, \
+        AggregatorMetricPickleReceiver, \
+        MetricDatagramReceiver
 
     root_service = CarbonRootService()
     root_service.setName(settings.program)
@@ -56,12 +59,11 @@ def createBaseService(config):
         amqp_spec = settings.get("AMQP_SPEC", None)
         amqp_exchange_name = settings.get("AMQP_EXCHANGE", "graphite")
 
-    for interface, port, protocol in ((settings.LINE_RECEIVER_INTERFACE,
-                                       settings.LINE_RECEIVER_PORT,
-                                       MetricLineReceiver),
-                                      (settings.PICKLE_RECEIVER_INTERFACE,
-                                       settings.PICKLE_RECEIVER_PORT,
-                                       MetricPickleReceiver)):
+    for interface, port, protocol in (('0.0.0.0', 2003, CacheMetricLineReceiver),
+                                      ('0.0.0.0', 2004, CacheMetricPickleReceiver),
+                                      ('0.0.0.0', 2023, AggregatorMetricLineReceiver),
+                                      ('0.0.0.0', 2024, AggregatorMetricPickleReceiver)
+                                    ):
         if port:
             factory = ServerFactory()
             factory.protocol = protocol
@@ -112,7 +114,7 @@ def createCacheService(config):
     from carbon.protocols import CacheManagementHandler
 
     # Configure application components
-    events.metricReceived.addHandler(MetricCache.store)
+    events.cacheMetricReceived.addHandler(MetricCache.store)
 
     root_service = createBaseService(config)
     factory = ServerFactory()
@@ -135,23 +137,48 @@ def createCacheService(config):
 
 
 def createAggregatorService(config):
+    
+    # HOOK IN CACHE
+    #    
+    from carbon.cache import MetricCache
+    from carbon.conf import settings
+    from carbon.protocols import CacheManagementHandler
+
+    # Configure application components
+    events.cacheMetricReceived.addHandler(MetricCache.store)
+
+    root_service = createBaseService(config)
+    factory = ServerFactory()
+    factory.protocol = CacheManagementHandler
+    service = TCPServer(7002, factory, interface='0.0.0.0')
+    service.setServiceParent(root_service)
+
+    # have to import this *after* settings are defined
+    from carbon.writer import WriterService
+
+    service = WriterService()
+    service.setServiceParent(root_service)
+
+    if settings.USE_FLOW_CONTROL:
+      events.cacheFull.addHandler(events.pauseReceivingMetrics)
+      events.cacheSpaceAvailable.addHandler(events.resumeReceivingMetrics)
+    
+    # HOOK IN AGGREGATOR
+    # 
     from carbon.aggregator import receiver
     from carbon.aggregator.rules import RuleManager
     from carbon.routers import ConsistentHashingRouter
     from carbon.client import CarbonClientManager
     from carbon.rewrite import RewriteRuleManager
     from carbon.conf import settings
-    from carbon import events
-
-    root_service = createBaseService(config)
 
     # Configure application components
     router = ConsistentHashingRouter()
     client_manager = CarbonClientManager(router)
     client_manager.setServiceParent(root_service)
 
-    events.metricReceived.addHandler(receiver.process)
-    events.metricGenerated.addHandler(client_manager.sendDatapoint)
+    events.aggreMetricReceived.addHandler(receiver.process)
+    events.aggreMetricGenerated.addHandler(client_manager.sendDatapoint)
 
     RuleManager.read_from(settings["aggregation-rules"])
     if exists(settings["rewrite-rules"]):

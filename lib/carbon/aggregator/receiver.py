@@ -32,4 +32,4 @@ def process(metric, datapoint):
     metric = rule.apply(metric)
 
   if metric not in aggregate_metrics:
-    events.metricGenerated(metric, datapoint)
+    events.aggreMetricGenerated(metric, datapoint)
