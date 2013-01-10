@@ -97,7 +97,6 @@ def run_twistd_plugin(filename):
 
     config = ServerOptions()
     config.parseOptions(twistd_options)
-
     runApp(config)
 
 

@@ -57,8 +57,10 @@ class MetricReceiver:
 
       if isinstance(self, AggregatorMetricLineReceiver):
           events.aggreMetricReceived(metric, datapoint)
-      else:
+      elif isinstance(self, CacheMetricLineReceiver):
           events.cacheMetricReceived(metric, datapoint)
+      else:
+          events.metricReceived(metric, datapoint)
 
 
 class MetricLineReceiver(MetricReceiver, LineOnlyReceiver):
@@ -115,8 +117,10 @@ class MetricPickleReceiver(MetricReceiver, Int32StringReceiver):
 
       if isinstance(self, AggregatorMetricPickleReceiver):
           events.aggreMetricReceived(metric, datapoint)
-      else:
+      elif isinstance(self, CacheMetricLineReceiver):
           events.cacheMetricReceived(metric, datapoint)
+      else:
+          events.metricReceived(metric, datapoint)
 
 
 class CacheMetricPickleReceiver(MetricPickleReceiver):

@@ -70,7 +70,15 @@ defaults = dict(
   USE_WHITELIST=False,
   CARBON_METRIC_PREFIX='carbon',
   CARBON_METRIC_INTERVAL=60,
-  CACHE_WRITE_STRATEGY='sorted'
+  CACHE_WRITE_STRATEGY='sorted',
+  CACHE_LINE_RECEIVER_INTERFACE='0.0.0.0',
+  CACHE_LINE_RECEIVER_PORT = 2003,
+  CACHE_PICKLE_RECEIVER_INTERFACE = '0.0.0.0',
+  CACHE_PICKLE_RECEIVER_PORT = 2004,
+  AGGREGATOR_LINE_RECEIVER_INTERFACE = '0.0.0.0',
+  AGGREGATOR_LINE_RECEIVER_PORT = 2023,
+  AGGREGATOR_PICKLE_RECEIVER_INTERFACE = '0.0.0.0',
+  AGGREGATOR_PICKLE_RECEIVER_PORT = 2024,
 )
 
 
@@ -428,7 +436,7 @@ def get_default_parser(usage="%prog [options] <start|stop|status>"):
 
 def get_parser(name):
     parser = get_default_parser()
-    if name == "carbon-aggregator":
+    if name == "carbon-combined" or name == "carbon-aggregator":
         parser.add_option(
             "--rules",
             default=None,

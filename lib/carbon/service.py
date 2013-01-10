@@ -37,11 +37,8 @@ class CarbonRootService(MultiService):
 
 def createBaseService(config):
     from carbon.conf import settings
-    from carbon.protocols import CacheMetricLineReceiver, \
-        CacheMetricPickleReceiver, \
-        AggregatorMetricLineReceiver, \
-        AggregatorMetricPickleReceiver, \
-        MetricDatagramReceiver
+    from carbon.protocols import (MetricLineReceiver, MetricPickleReceiver,
+                                  MetricDatagramReceiver)
 
     root_service = CarbonRootService()
     root_service.setName(settings.program)
@@ -59,11 +56,8 @@ def createBaseService(config):
         amqp_spec = settings.get("AMQP_SPEC", None)
         amqp_exchange_name = settings.get("AMQP_EXCHANGE", "graphite")
 
-    for interface, port, protocol in (('0.0.0.0', 2003, CacheMetricLineReceiver),
-                                      ('0.0.0.0', 2004, CacheMetricPickleReceiver),
-                                      ('0.0.0.0', 2023, AggregatorMetricLineReceiver),
-                                      ('0.0.0.0', 2024, AggregatorMetricPickleReceiver)
-                                    ):
+    for interface, port, protocol in ((settings.LINE_RECEIVER_INTERFACE, settings.LINE_RECEIVER_PORT, MetricLineReceiver),
+                                      (settings.PICKLE_RECEIVER_INTERFACE, settings.PICKLE_RECEIVER_PORT, MetricPickleReceiver)):
         if port:
             factory = ServerFactory()
             factory.protocol = protocol
@@ -114,7 +108,7 @@ def createCacheService(config):
     from carbon.protocols import CacheManagementHandler
 
     # Configure application components
-    events.cacheMetricReceived.addHandler(MetricCache.store)
+    events.metricReceived.addHandler(MetricCache.store)
 
     root_service = createBaseService(config)
     factory = ServerFactory()
@@ -137,48 +131,23 @@ def createCacheService(config):
 
 
 def createAggregatorService(config):
-    
-    # HOOK IN CACHE
-    #    
-    from carbon.cache import MetricCache
-    from carbon.conf import settings
-    from carbon.protocols import CacheManagementHandler
-
-    # Configure application components
-    events.cacheMetricReceived.addHandler(MetricCache.store)
-
-    root_service = createBaseService(config)
-    factory = ServerFactory()
-    factory.protocol = CacheManagementHandler
-    service = TCPServer(7002, factory, interface='0.0.0.0')
-    service.setServiceParent(root_service)
-
-    # have to import this *after* settings are defined
-    from carbon.writer import WriterService
-
-    service = WriterService()
-    service.setServiceParent(root_service)
-
-    if settings.USE_FLOW_CONTROL:
-      events.cacheFull.addHandler(events.pauseReceivingMetrics)
-      events.cacheSpaceAvailable.addHandler(events.resumeReceivingMetrics)
-    
-    # HOOK IN AGGREGATOR
-    # 
     from carbon.aggregator import receiver
     from carbon.aggregator.rules import RuleManager
     from carbon.routers import ConsistentHashingRouter
     from carbon.client import CarbonClientManager
     from carbon.rewrite import RewriteRuleManager
     from carbon.conf import settings
+    from carbon import events
+
+    root_service = createBaseService(config)
 
     # Configure application components
     router = ConsistentHashingRouter()
     client_manager = CarbonClientManager(router)
     client_manager.setServiceParent(root_service)
 
-    events.aggreMetricReceived.addHandler(receiver.process)
-    events.aggreMetricGenerated.addHandler(client_manager.sendDatapoint)
+    events.metricReceived.addHandler(receiver.process)
+    events.metricGenerated.addHandler(client_manager.sendDatapoint)
 
     RuleManager.read_from(settings["aggregation-rules"])
     if exists(settings["rewrite-rules"]):
@@ -224,3 +193,243 @@ def createRelayService(config):
       client_manager.startClient(destination)
 
     return root_service
+
+
+def createBaseServiceX(config):
+    from carbon.conf import settings
+    from carbon.protocols import (CacheMetricLineReceiver, CacheMetricPickleReceiver, AggregatorMetricLineReceiver,
+                                  AggregatorMetricPickleReceiver,  MetricDatagramReceiver)
+
+    root_service = CarbonRootService()
+    root_service.setName(settings.program)
+
+    use_amqp = settings.get("ENABLE_AMQP", False)
+    if use_amqp:
+        from carbon import amqp_listener
+
+        amqp_host = settings.get("AMQP_HOST", "localhost")
+        amqp_port = settings.get("AMQP_PORT", 5672)
+        amqp_user = settings.get("AMQP_USER", "guest")
+        amqp_password = settings.get("AMQP_PASSWORD", "guest")
+        amqp_verbose = settings.get("AMQP_VERBOSE", False)
+        amqp_vhost = settings.get("AMQP_VHOST", "/")
+        amqp_spec = settings.get("AMQP_SPEC", None)
+        amqp_exchange_name = settings.get("AMQP_EXCHANGE", "graphite")
+
+    for interface, port, protocol in ((settings.CACHE_LINE_RECEIVER_INTERFACE, settings.CACHE_LINE_RECEIVER_PORT, CacheMetricLineReceiver),
+                                      (settings.CACHE_PICKLE_RECEIVER_INTERFACE, settings.CACHE_PICKLE_RECEIVER_PORT, CacheMetricPickleReceiver),
+                                      (settings.AGGREGATOR_LINE_RECEIVER_INTERFACE, settings.AGGREGATOR_LINE_RECEIVER_PORT, AggregatorMetricLineReceiver),
+                                      (settings.AGGREGATOR_PICKLE_RECEIVER_INTERFACE, settings.AGGREGATOR_PICKLE_RECEIVER_PORT, AggregatorMetricPickleReceiver)):
+        print interface, port, protocol
+        if port:
+            factory = ServerFactory()
+            factory.protocol = protocol
+            service = TCPServer(int(port), factory, interface=interface)
+            service.setServiceParent(root_service)
+
+    if settings.ENABLE_UDP_LISTENER:
+        service = UDPServer(int(settings.UDP_RECEIVER_PORT),
+                            MetricDatagramReceiver(),
+                            interface=settings.UDP_RECEIVER_INTERFACE)
+        service.setServiceParent(root_service)
+
+    if use_amqp:
+        factory = amqp_listener.createAMQPListener(
+            amqp_user, amqp_password,
+            vhost=amqp_vhost, spec=amqp_spec,
+            exchange_name=amqp_exchange_name,
+            verbose=amqp_verbose)
+        service = TCPClient(amqp_host, int(amqp_port), factory)
+        service.setServiceParent(root_service)
+
+    if settings.ENABLE_MANHOLE:
+        from carbon import manhole
+
+        factory = manhole.createManholeListener()
+        service = TCPServer(int(settings.MANHOLE_PORT), factory,
+                            interface=settings.MANHOLE_INTERFACE)
+        service.setServiceParent(root_service)
+
+    if settings.USE_WHITELIST:
+        from carbon.regexlist import WhiteList, BlackList
+        WhiteList.read_from(settings["whitelist"])
+        BlackList.read_from(settings["blacklist"])
+
+    # Instantiate an instrumentation service that will record metrics about
+    # this service.
+    from carbon.instrumentation import InstrumentationService
+
+    service = InstrumentationService()
+    service.setServiceParent(root_service)
+
+    return root_service
+
+def createCombinedService(config):
+
+    # HOOK IN CACHE
+    #
+    from carbon.cache import MetricCache
+    from carbon.conf import settings
+    from carbon.protocols import CacheManagementHandler
+
+    # Configure application components
+    events.cacheMetricReceived.addHandler(MetricCache.store)
+
+    root_service = createBaseServiceX(config)
+    factory = ServerFactory()
+    factory.protocol = CacheManagementHandler
+    service = TCPServer(7002, factory, interface='0.0.0.0')
+    service.setServiceParent(root_service)
+
+    # have to import this *after* settings are defined
+    from carbon.writer import WriterService
+
+    service = WriterService()
+    service.setServiceParent(root_service)
+
+    if settings.USE_FLOW_CONTROL:
+        events.cacheFull.addHandler(events.pauseReceivingMetrics)
+        events.cacheSpaceAvailable.addHandler(events.resumeReceivingMetrics)
+
+    # HOOK IN AGGREGATOR
+    #
+    from carbon.aggregator import receiver
+    from carbon.aggregator.rules import RuleManager
+    from carbon.routers import ConsistentHashingRouter
+    from carbon.client import CarbonClientManager
+    from carbon.rewrite import RewriteRuleManager
+
+    # Configure application components
+    router = ConsistentHashingRouter()
+    client_manager = CarbonClientManager(router)
+    client_manager.setServiceParent(root_service)
+
+    events.aggreMetricReceived.addHandler(receiver.process)
+    events.metricGenerated.addHandler(client_manager.sendDatapoint)
+
+    RuleManager.read_from(settings["aggregation-rules"])
+    if exists(settings["rewrite-rules"]):
+        RewriteRuleManager.read_from(settings["rewrite-rules"])
+
+    if not settings.DESTINATIONS:
+        raise Exception("Required setting DESTINATIONS is missing from carbon.conf")
+
+    for destination in util.parseDestinations(settings.DESTINATIONS):
+        client_manager.startClient(destination)
+
+    return root_service
+
+#    from carbon.cache import MetricCache
+#    from carbon.conf import settings
+#    from carbon.protocols import CacheManagementHandler
+#
+#    from carbon import events
+#    # Configure application components
+#    events.cacheMetricReceived.addHandler(MetricCache.store)
+#
+#    from carbon.protocols import CacheMetricLineReceiver, CacheMetricPickleReceiver, \
+#        AggregatorMetricLineReceiver, AggregatorMetricPickleReceiver,  MetricDatagramReceiver
+#
+#    root_service = CarbonRootService()
+#    root_service.setName(settings.program)
+#
+#    use_amqp = settings.get("ENABLE_AMQP", False)
+#    if use_amqp:
+#        from carbon import amqp_listener
+#
+#        amqp_host = settings.get("AMQP_HOST", "localhost")
+#        amqp_port = settings.get("AMQP_PORT", 5672)
+#        amqp_user = settings.get("AMQP_USER", "guest")
+#        amqp_password = settings.get("AMQP_PASSWORD", "guest")
+#        amqp_verbose = settings.get("AMQP_VERBOSE", False)
+#        amqp_vhost = settings.get("AMQP_VHOST", "/")
+#        amqp_spec = settings.get("AMQP_SPEC", None)
+#        amqp_exchange_name = settings.get("AMQP_EXCHANGE", "graphite")
+#
+#    for interface, port, protocol in ((settings.CACHE_LINE_RECEIVER_INTERFACE, settings.CACHE_LINE_RECEIVER_PORT, CacheMetricLineReceiver),
+#                                      (settings.CACHE_PICKLE_RECEIVER_INTERFACE, settings.CACHE_PICKLE_RECEIVER_PORT, CacheMetricPickleReceiver),
+#                                      (settings.AGGREGATOR_LINE_RECEIVER_INTERFACE, settings.AGGREGATOR_LINE_RECEIVER_PORT, AggregatorMetricLineReceiver),
+#                                      (settings.AGGREGATOR_PICKLE_RECEIVER_INTERFACE, settings.AGGREGATOR_PICKLE_RECEIVER_PORT, AggregatorMetricPickleReceiver)):
+#        if port:
+#            factory = ServerFactory()
+#            factory.protocol = protocol
+#            service = TCPServer(int(port), factory, interface=interface)
+#            service.setServiceParent(root_service)
+#
+#    if settings.ENABLE_UDP_LISTENER:
+#        service = UDPServer(int(settings.UDP_RECEIVER_PORT),
+#                            MetricDatagramReceiver(),
+#                            interface=settings.UDP_RECEIVER_INTERFACE)
+#        service.setServiceParent(root_service)
+#
+#    if use_amqp:
+#        factory = amqp_listener.createAMQPListener(
+#            amqp_user, amqp_password,
+#            vhost=amqp_vhost, spec=amqp_spec,
+#            exchange_name=amqp_exchange_name,
+#            verbose=amqp_verbose)
+#        service = TCPClient(amqp_host, int(amqp_port), factory)
+#        service.setServiceParent(root_service)
+#
+#    if settings.ENABLE_MANHOLE:
+#        from carbon import manhole
+#
+#        factory = manhole.createManholeListener()
+#        service = TCPServer(int(settings.MANHOLE_PORT), factory,
+#                            interface=settings.MANHOLE_INTERFACE)
+#        service.setServiceParent(root_service)
+#
+#    if settings.USE_WHITELIST:
+#        from carbon.regexlist import WhiteList, BlackList
+#        WhiteList.read_from(settings["whitelist"])
+#        BlackList.read_from(settings["blacklist"])
+#
+#    # Instantiate an instrumentation service that will record metrics about
+#    # this service.
+#    from carbon.instrumentation import InstrumentationService
+#
+#    service = InstrumentationService()
+#    service.setServiceParent(root_service)
+#
+#    factory = ServerFactory()
+#    factory.protocol = CacheManagementHandler
+#    service = TCPServer(int(settings.CACHE_QUERY_PORT), factory, interface=settings.CACHE_QUERY_INTERFACE)
+#    service.setServiceParent(root_service)
+#
+#    # have to import this *after* settings are defined
+#    from carbon.writer import WriterService
+#
+#    service = WriterService()
+#    service.setServiceParent(root_service)
+#
+#    if settings.USE_FLOW_CONTROL:
+#        events.cacheFull.addHandler(events.pauseReceivingMetrics)
+#        events.cacheSpaceAvailable.addHandler(events.resumeReceivingMetrics)
+#
+#
+#    from carbon.aggregator import receiver
+#    from carbon.aggregator.rules import RuleManager
+#    from carbon.routers import ConsistentHashingRouter
+#    from carbon.client import CarbonClientManager
+#    from carbon.rewrite import RewriteRuleManager
+#    from carbon.conf import settings
+#
+#    # Configure application components
+#    router = ConsistentHashingRouter()
+#    client_manager = CarbonClientManager(router)
+#    client_manager.setServiceParent(root_service)
+#
+#    events.aggreMetricReceived.addHandler(receiver.process)
+#    events.metricGenerated.addHandler(client_manager.sendDatapoint)
+#
+#    RuleManager.read_from(settings["aggregation-rules"])
+#    if exists(settings["rewrite-rules"]):
+#        RewriteRuleManager.read_from(settings["rewrite-rules"])
+#
+#    if not settings.DESTINATIONS:
+#        raise Exception("Required setting DESTINATIONS is missing from carbon.conf")
+#
+#    for destination in util.parseDestinations(settings.DESTINATIONS):
+#        client_manager.startClient(destination)
+#
+#    return root_service
